@@ -15,6 +15,8 @@ FROM nginx:alpine
 
 COPY --from=build /app/dist /usr/share/nginx/html
 
+RUN rm -f /usr/share/nginx/html/index.html
+
 EXPOSE 80
 
 CMD ["nginx", "-g", "daemon off;"]
