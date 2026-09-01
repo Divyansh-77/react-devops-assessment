@@ -1,4 +1,4 @@
-name: CI
+name: CI/CD
 
 on:
   push:
@@ -36,9 +36,10 @@ jobs:
         run: npm run build
 
   docker-build:
-    name: Docker Build
+    name: Docker Build and Deploy
     runs-on: ubuntu-latest
     needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout repository
@@ -46,3 +47,76 @@ jobs:
 
       - name: Build Docker image
         run: docker build -t react-devops-assessment:${{ github.sha }} .
+
+      - name: Save Docker image
+        run: docker save react-devops-assessment:${{ github.sha }} | gzip > react-app.tar.gz
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Copy files to EC2
+        run: |
+          scp -i ~/.ssh/deploy_key \
+            react-app.tar.gz \
+            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/react-app.tar.gz"
+
+          scp -i ~/.ssh/deploy_key \
+            deploy/nginx.conf \
+            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/nginx.conf"
+
+      - name: Deploy application
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" << 'EOF'
+
+          set -e
+
+          echo "Loading Docker image..."
+          gunzip -c /tmp/react-app.tar.gz | docker load
+
+          echo "Updating Nginx configuration..."
+          sudo cp /tmp/nginx.conf /etc/nginx/sites-available/default
+          sudo nginx -t
+          sudo systemctl reload nginx
+
+          echo "Preparing previous version for rollback..."
+          docker stop react-app 2>/dev/null || true
+          docker rename react-app react-app-previous 2>/dev/null || true
+
+          echo "Starting new application..."
+          docker run -d \
+            --name react-app \
+            --restart unless-stopped \
+            -p 127.0.0.1:8080:80 \
+            react-devops-assessment:${{ github.sha }}
+
+          echo "Waiting for application..."
+          sleep 5
+
+          echo "Running health check..."
+
+          if curl --fail http://127.0.0.1/; then
+            echo "Health check passed."
+            echo "Deployment successful."
+
+            docker rm -f react-app-previous 2>/dev/null || true
+          else
+            echo "Health check failed."
+            echo "Rolling back to previous version..."
+
+            docker rm -f react-app 2>/dev/null || true
+            docker rename react-app-previous react-app
+            docker start react-app
+
+            echo "Rollback completed."
+            exit 1
+          fi
+
+          rm -f /tmp/react-app.tar.gz
+          rm -f /tmp/nginx.conf
+
+          EOF
