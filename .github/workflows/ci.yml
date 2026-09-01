@@ -66,13 +66,28 @@ jobs:
 
           EC2_HOST="$(printf '%s' "$EC2_HOST" | tr -d '\r\n' | xargs)"
 
+          echo "Host length: ${#EC2_HOST}"
+          echo "Host format check..."
+
           if [[ ! "$EC2_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid EC2_HOST format."
+            echo "ERROR: EC2_HOST is not a valid IPv4 address."
             exit 1
           fi
 
-          echo "Configuring SSH for EC2 host: $EC2_HOST"
-          ssh-keyscan -4 -H "$EC2_HOST" >> ~/.ssh/known_hosts
+          echo "Host format is valid."
+
+          echo "Testing network connectivity..."
+          timeout 10 bash -c "</dev/tcp/$EC2_HOST/22" \
+            && echo "Port 22 is reachable." \
+            || {
+              echo "ERROR: Port 22 is not reachable from GitHub Actions."
+              exit 1
+            }
+
+          echo "Scanning SSH host key..."
+          ssh-keyscan -4 -T 10 -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+          echo "SSH host key scan successful."
 
       - name: Copy deployment files to EC2
         env:
