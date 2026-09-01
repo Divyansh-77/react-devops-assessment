@@ -15,7 +15,11 @@
 
 **Application:** [Open Live Application](http://43.204.101.177)
 
+> **Note:** This is a temporary assessment environment. The AWS infrastructure may be destroyed after review to avoid unnecessary costs, so the live demo may become unavailable.
+
 **Repository:** [react-devops-assessment](https://github.com/Divyansh-77/react-devops-assessment)
+
+**Implementation Document:** [View Implementation Document](https://drive.google.com/file/d/1LJRf7sLl61LAklObIu1k47ILe5SiHJkC/view?usp=sharing)
 
 ---
 
