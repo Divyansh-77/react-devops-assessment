@@ -25,48 +25,34 @@
   <img src="./docs/architecture.png" alt="High-Level DevOps Architecture" width="100%">
 </p>
 
+### Deployment Flow
+
+**Developer → GitHub → GitHub Actions → Test → Docker Build → AWS EC2 → Nginx → React Application**
+
+### Infrastructure Flow
+
+**Terraform → AWS EC2 + Security Group + SSH Key Pair**
+
+---
+
+## Technology Stack
+
+| Technology | Purpose |
+|---|---|
+| React | Frontend application |
+| Docker | Application containerization |
+| Terraform | Infrastructure as Code |
+| AWS EC2 | Application server |
+| Nginx | Reverse proxy |
+| GitHub Actions | CI/CD automation |
+| GitHub | Source control |
+| SSH/SCP | Deployment communication |
+
+---
+
+## Repository Structure
+
 ```text
-Developer
-    |
-    v
-GitHub Repository
-    |
-    v
-GitHub Actions
-    |
-    +--> Test
-    |      |
-    |      +--> npm ci
-    |      +--> npm run lint
-    |      +--> npm run build
-    |
-    +--> Docker Build
-           |
-           v
-       AWS EC2
-           |
-           v
-         Nginx :80
-           |
-           v
-    Docker :127.0.0.1:8080
-           |
-           v
-     React Application
-
-Terraform is used separately to provision and manage the AWS infrastructure.
-
-Technology Stack
-Technology	Purpose
-React	Frontend application
-Docker	Application containerization
-Terraform	Infrastructure as Code
-AWS EC2	Application server
-Nginx	Reverse proxy
-GitHub Actions	CI/CD automation
-GitHub	Source control
-SSH/SCP	Deployment communication
-Repository Structure
 react-devops-assessment/
 ├── src/
 ├── deploy/
@@ -81,42 +67,58 @@ react-devops-assessment/
 ├── package.json
 ├── package-lock.json
 └── README.md
-Infrastructure with Terraform
+```
 
-Terraform provisions the AWS resources required for the application:
+---
 
-EC2 instance
-Security group
-SSH key pair
-EC2 initialization
+## Infrastructure with Terraform
 
-Instance initialization installs and starts Docker and Nginx.
+Terraform is used to provision and manage the AWS infrastructure required by the application.
 
+### Managed Resources
+
+- EC2 instance
+- Security group
+- SSH key pair
+- EC2 initialization
+
+Docker and Nginx are installed automatically during instance initialization.
+
+### Provisioning
+
+```bash
 terraform -chdir=terraform init
 terraform -chdir=terraform plan
 terraform -chdir=terraform apply
-Docker
+```
 
-The application uses a multi-stage Docker build.
+---
 
-Build stage
+## Docker Containerization
 
-Node.js
-Dependency installation
-React production build
+The application uses a **multi-stage Docker build**.
 
-Runtime stage
+### Build Stage
 
-Nginx Alpine
-Serves the generated dist files
-Exposes port 80
+- Node.js
+- Dependency installation
+- React production build
 
-This keeps the production image focused on application runtime rather than the build environment.
+### Runtime Stage
 
-Nginx
+- Nginx Alpine
+- Serves the React `dist` files
+- Exposes port `80`
 
-Nginx runs on the EC2 host and provides the public HTTP entry point.
+This separates the build environment from the application runtime.
 
+---
+
+## Nginx Reverse Proxy
+
+Nginx runs on the EC2 host and acts as the public HTTP entry point.
+
+```text
 Internet
    |
    v
@@ -130,13 +132,17 @@ Docker Container :80
    |
    v
 React Application
+```
 
-The Docker container is not directly exposed to the internet.
+The Docker container is bound to `127.0.0.1:8080` and is not directly exposed to the internet.
 
-CI/CD
+---
 
-A push to main triggers the GitHub Actions pipeline:
+## CI/CD Pipeline
 
+A push to the `main` branch triggers the GitHub Actions workflow.
+
+```text
 Push to main
      |
      v
@@ -149,103 +155,135 @@ Lint
 React Build
      |
      v
-Docker Image Build
+Docker Build
      |
      v
-SSH / SCP to EC2
+SSH / SCP
      |
      v
-Container Deployment
+AWS EC2 Deployment
      |
      v
 Health Check
      |
-     +---- PASS ----> Success
+     +---- PASS ----> Deployment Successful
      |
      +---- FAIL ----> Rollback
-Test
+```
+
+### Test
+
+```bash
 npm ci
 npm run lint
 npm run build
-Deployment
+```
 
-After tests pass, the workflow:
+### Deployment
 
-Builds the Docker image.
-Tags the image with the Git commit SHA.
-Transfers the image to EC2.
-Loads the image into Docker.
-Starts the new container.
-Validates the application.
-Rolls back if validation fails.
-Health Check
+After the test stage succeeds, GitHub Actions:
+
+1. Builds the Docker image.
+2. Tags the image with the Git commit SHA.
+3. Transfers the image to EC2 using SSH/SCP.
+4. Loads the image into Docker.
+5. Starts the new application container.
+6. Runs a health check.
+7. Performs rollback if the health check fails.
+
+---
+
+## Health Check
 
 The deployment validates the application through Nginx:
 
+```bash
 curl --fail --silent --show-error http://127.0.0.1/
+```
 
-A deployment is considered successful only when the health check passes.
+A deployment is considered successful only after the health check passes.
 
-Rollback
+---
 
-Before deploying a new version, the previous container is preserved as react-app-previous.
+## Rollback Strategy
 
-If the new deployment fails its health check:
+Before deploying a new version, the previous container is preserved as:
 
-New Version
-    |
-    v
-Health Check
-    |
-    X
-    |
-    v
-Rollback
-    |
-    v
-Previous Version
+```text
+react-app-previous
+```
 
-The rollback mechanism was validated using an intentionally broken deployment. The failed deployment triggered the rollback and restored the previous working version.
+If the new deployment fails its health check, the workflow automatically restores the previous working container.
 
-Security
-Secrets are stored in GitHub Actions Secrets.
-SSH private keys are not committed to the repository.
-The application container is bound to 127.0.0.1:8080.
-Nginx is the public HTTP entry point.
-AWS access should follow least-privilege principles.
-SSH access is configured for CI/CD connectivity in this assessment environment.
-Deployment
+The rollback mechanism was validated using an intentionally broken deployment. The failed health check triggered the rollback and restored the previous working application.
 
-Push changes to main:
+---
 
+## Security
+
+- Deployment secrets are stored in GitHub Actions Secrets.
+- SSH private keys are not committed to the repository.
+- The application container is bound to `127.0.0.1:8080`.
+- Nginx provides the public HTTP entry point.
+- AWS access should follow least-privilege principles.
+- SSH access is configured for CI/CD connectivity in the assessment environment.
+
+---
+
+## Deployment
+
+Push changes to `main`:
+
+```bash
 git add .
 git commit -m "update application"
 git push origin main
+```
 
-GitHub Actions then performs testing, Docker build, deployment, and health validation automatically.
+GitHub Actions automatically performs:
 
-Cleanup
+**Test → Build → Deploy → Health Check**
 
-The assessment infrastructure can be removed with:
+---
 
+## Cleanup
+
+After assessment and technical review, the temporary AWS infrastructure can be removed using:
+
+```bash
 terraform -chdir=terraform destroy
+```
 
-This prevents unnecessary ongoing AWS costs after the review.
+This helps prevent unnecessary ongoing AWS costs.
 
-Production Considerations
+---
 
-For a production environment, the setup could be extended with:
+## Production Considerations
 
-HTTPS/TLS
-Restricted SSH/network access
-Centralized logging
-Monitoring and alerting
-Stronger IAM controls
-Additional security and scalability measures
-Conclusion
+For production use, the solution could be extended with:
 
-This project demonstrates a complete DevOps workflow:
+- HTTPS/TLS
+- Restricted SSH and network access
+- Centralized logging
+- Monitoring and alerting
+- Stronger IAM controls
+- Additional security and scalability measures
 
-Terraform → AWS EC2 → Docker → Nginx → GitHub Actions → Health Check → Rollback
+---
 
-It provides reproducible infrastructure, automated deployment, containerized application delivery, deployment validation, and failure recovery.
+## Conclusion
+
+This project demonstrates an end-to-end DevOps workflow:
+
+**Terraform → AWS EC2 → Docker → Nginx → GitHub Actions → Health Check → Rollback**
+
+The implementation provides:
+
+- Infrastructure as Code
+- Containerized application deployment
+- Automated CI/CD
+- Application health validation
+- Automated rollback
+- Reproducible deployment workflow
+
+---
