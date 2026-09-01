@@ -36,7 +36,7 @@ jobs:
         run: npm run build
 
   docker-build:
-    name: Docker Build and Deploy
+    name: Build and Deploy
     runs-on: ubuntu-latest
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -49,70 +49,125 @@ jobs:
         run: docker build -t react-devops-assessment:${{ github.sha }} .
 
       - name: Save Docker image
-        run: docker save react-devops-assessment:${{ github.sha }} | gzip > react-app.tar.gz
+        run: |
+          docker save react-devops-assessment:${{ github.sha }} | gzip > react-app.tar.gz
 
       - name: Setup SSH
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
         run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+          set -e
 
-      - name: Copy files to EC2
+          mkdir -p ~/.ssh
+
+          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          EC2_HOST="$(printf '%s' "$EC2_HOST" | tr -d '\r\n' | xargs)"
+
+          if [[ ! "$EC2_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid EC2_HOST format."
+            exit 1
+          fi
+
+          echo "Configuring SSH for EC2 host: $EC2_HOST"
+          ssh-keyscan -4 -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+      - name: Copy deployment files to EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
         run: |
+          set -e
+
+          EC2_HOST="$(printf '%s' "$EC2_HOST" | tr -d '\r\n' | xargs)"
+
           scp -i ~/.ssh/deploy_key \
             react-app.tar.gz \
-            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/react-app.tar.gz"
+            "${EC2_USER}@${EC2_HOST}:/tmp/react-app.tar.gz"
 
           scp -i ~/.ssh/deploy_key \
             deploy/nginx.conf \
-            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/nginx.conf"
+            "${EC2_USER}@${EC2_HOST}:/tmp/nginx.conf"
 
       - name: Deploy application
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
-          ssh -i ~/.ssh/deploy_key \
-            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" << 'EOF'
-
           set -e
+
+          EC2_HOST="$(printf '%s' "$EC2_HOST" | tr -d '\r\n' | xargs)"
+
+          ssh -i ~/.ssh/deploy_key \
+            "${EC2_USER}@${EC2_HOST}" \
+            "IMAGE_TAG='$IMAGE_TAG' bash -s" << 'EOF'
+
+          set -Eeuo pipefail
+
+          IMAGE="react-devops-assessment:${IMAGE_TAG}"
+          CURRENT_CONTAINER="react-app"
+          PREVIOUS_CONTAINER="react-app-previous"
+
+          rollback() {
+            echo "Deployment failed. Starting rollback..."
+
+            docker rm -f "$CURRENT_CONTAINER" 2>/dev/null || true
+
+            if docker container inspect "$PREVIOUS_CONTAINER" >/dev/null 2>&1; then
+              docker rename "$PREVIOUS_CONTAINER" "$CURRENT_CONTAINER" 2>/dev/null || true
+              docker start "$CURRENT_CONTAINER" >/dev/null
+
+              echo "Rollback completed successfully."
+            else
+              echo "No previous application version is available for rollback."
+            fi
+          }
 
           echo "Loading Docker image..."
           gunzip -c /tmp/react-app.tar.gz | docker load
 
-          echo "Updating Nginx configuration..."
+          echo "Validating Nginx configuration..."
           sudo cp /tmp/nginx.conf /etc/nginx/sites-available/default
           sudo nginx -t
           sudo systemctl reload nginx
 
-          echo "Preparing previous version for rollback..."
-          docker stop react-app 2>/dev/null || true
-          docker rename react-app react-app-previous 2>/dev/null || true
+          echo "Preparing previous application version..."
 
-          echo "Starting new application..."
-          docker run -d \
-            --name react-app \
+          if docker container inspect "$CURRENT_CONTAINER" >/dev/null 2>&1; then
+            docker stop "$CURRENT_CONTAINER" >/dev/null
+            docker rm "$PREVIOUS_CONTAINER" 2>/dev/null || true
+            docker rename "$CURRENT_CONTAINER" "$PREVIOUS_CONTAINER"
+          fi
+
+          echo "Starting application version: $IMAGE"
+
+          if ! docker run -d \
+            --name "$CURRENT_CONTAINER" \
             --restart unless-stopped \
             -p 127.0.0.1:8080:80 \
-            react-devops-assessment:${{ github.sha }}
+            "$IMAGE"; then
+
+            rollback
+            exit 1
+          fi
 
           echo "Waiting for application..."
           sleep 5
 
           echo "Running health check..."
 
-          if curl --fail http://127.0.0.1/; then
+          if curl --fail --silent --show-error http://127.0.0.1/ > /dev/null; then
             echo "Health check passed."
             echo "Deployment successful."
 
-            docker rm -f react-app-previous 2>/dev/null || true
+            docker rm -f "$PREVIOUS_CONTAINER" 2>/dev/null || true
           else
             echo "Health check failed."
-            echo "Rolling back to previous version..."
 
-            docker rm -f react-app 2>/dev/null || true
-            docker rename react-app-previous react-app
-            docker start react-app
-
-            echo "Rollback completed."
+            rollback
             exit 1
           fi
 
