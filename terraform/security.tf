@@ -1,8 +1,3 @@
-variable "ssh_allowed_cidr" {
-  description = "CIDR block allowed to access SSH"
-  type        = string
-}
-
 resource "aws_security_group" "app" {
   name        = "react-devops-assessment"
   description = "Security group for the React application server"
@@ -16,11 +11,11 @@ resource "aws_security_group" "app" {
   }
 
   ingress {
-    description = "SSH"
+    description = "SSH for CI/CD deployment"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = [var.ssh_allowed_cidr]
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
